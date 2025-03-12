@@ -9,7 +9,7 @@ import logging
 
 app = Flask(__name__)
 
-# Configure logging (optional, but helpful for debugging)
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def extract_emails_from_url(url):
@@ -18,15 +18,17 @@ def extract_emails_from_url(url):
     """
     emails = set()
     try:
-        headers = {'User-Agent': 'WebsiteCrawlerAPI/1.0'}
-        response = requests.get(url, headers=headers, timeout=15)
+        headers = {'User-Agent': 'EmailScraperAPI/1.0'}
+        logging.info(f"Fetching content from: {url} for email extraction") # Log before request
+        response = requests.get(url, headers=headers, timeout=5) # Reduced timeout to 5 seconds
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         text = soup.get_text(separator=' ')
         found_emails = set(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text))
         emails.update(found_emails)
+        logging.info(f"Extracted {len(found_emails)} emails from: {url}") # Log after extraction
     except requests.exceptions.RequestException as e:
-        logging.warning(f"Error fetching or parsing {url}: {e}") # Log errors, don't break crawl
+        logging.warning(f"Error fetching or parsing {url} for email extraction: {e}")
     return emails
 
 def crawl_website(start_url, max_pages=50, delay=1):
@@ -39,20 +41,20 @@ def crawl_website(start_url, max_pages=50, delay=1):
     urls_to_visit = [start_url]
     pages_crawled = 0
 
-    base_url = urlparse(start_url).netloc # Get base domain for URL joining
+    base_url = urlparse(start_url).netloc
 
     while urls_to_visit and pages_crawled < max_pages:
-        current_url = urls_to_visit.pop(0) # FIFO for breadth-first crawling
+        current_url = urls_to_visit.pop(0)
 
         if current_url in visited_urls:
-            continue # Skip already visited URLs
-
-        if not current_url.startswith(start_url) and urlparse(current_url).netloc != base_url:
-            logging.info(f"Skipping external URL: {current_url}") # Skip external URLs
-            visited_urls.add(current_url) # Mark as visited to avoid re-queueing from other pages
             continue
 
-        logging.info(f"Crawling page: {current_url}")
+        if not current_url.startswith(start_url) and urlparse(current_url).netloc != base_url:
+            logging.info(f"Skipping external URL: {current_url}")
+            visited_urls.add(current_url)
+            continue
+
+        logging.info(f"Crawling page: {current_url} - Page {pages_crawled + 1}/{max_pages}") # Log page crawl start
         page_emails = extract_emails_from_url(current_url)
         emails_found.update(page_emails)
         visited_urls.add(current_url)
@@ -60,18 +62,21 @@ def crawl_website(start_url, max_pages=50, delay=1):
 
         try:
             headers = {'User-Agent': 'WebsiteCrawlerAPI/1.0'}
-            response = requests.get(current_url, headers=headers, timeout=10)
+            logging.info(f"Fetching links from: {current_url}") # Log before link fetching request
+            response = requests.get(current_url, headers=headers, timeout=5) # Reduced timeout to 5 seconds for links as well
             soup = BeautifulSoup(response.content, 'html.parser')
+            links_on_page = 0
             for link in soup.find_all('a', href=True):
-                absolute_url = urljoin(current_url, link.get('href')) # Use urljoin
-                if absolute_url.startswith(start_url) or urlparse(absolute_url).netloc == base_url: # Stay within the base domain
+                absolute_url = urljoin(current_url, link.get('href'))
+                if absolute_url.startswith(start_url) or urlparse(absolute_url).netloc == base_url:
                     if absolute_url not in visited_urls and absolute_url not in urls_to_visit:
-                        urls_to_visit.append(absolute_url) # Add new URLs to queue
-
+                        urls_to_visit.append(absolute_url)
+                        links_on_page += 1
+            logging.info(f"Found {links_on_page} new links on: {current_url}") # Log links found
         except requests.exceptions.RequestException as e:
             logging.warning(f"Error fetching links from {current_url}: {e}")
 
-        time.sleep(delay) # Polite delay
+        time.sleep(delay)
 
     return list(emails_found)
 
@@ -92,8 +97,8 @@ def api_crawl_emails():
     if not start_url:
         return jsonify({"error": "URL parameter is missing for /crawl-emails (website crawl)."}), 400
 
-    max_pages = request.args.get('max_pages', default=50, type=int) # Allow max_pages parameter
-    if max_pages > 200: # Basic limit to prevent abuse
+    max_pages = request.args.get('max_pages', default=5, type=int) # Reduced default max_pages for testing
+    if max_pages > 200:
         max_pages = 200
 
     emails = crawl_website(start_url, max_pages=max_pages)
